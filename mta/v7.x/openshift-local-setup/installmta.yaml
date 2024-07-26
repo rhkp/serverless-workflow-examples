@@ -2,7 +2,7 @@
 apiVersion: operators.coreos.com/v1
 kind: OperatorGroup
 metadata:
-  name: openshift-mta-qd6nx
+  name: openshift-mta-55mld
   namespace: openshift-mta
 spec:
   targetNamespaces:
@@ -72,11 +72,13 @@ metadata:
     features.operators.openshift.io/proxy-aware: 'false'
     operatorframework.io/suggested-namespace: openshift-mta
     description: MTA is an application modernization platform that helps organizations safely and predictably modernize applications to OpenShift at scale.
-    olm.operatorGroup: openshift-mta-qd6nx
+    olm.operatorGroup: openshift-mta-55mld
     features.operators.openshift.io/disconnected: 'true'
     features.operators.openshift.io/tls-profiles: 'false'
   name: mta-operator.v7.0.3
   namespace: openshift-mta
+  finalizers:
+    - operators.coreos.com/csv-cleanup
   labels:
     olm.managed: 'true'
     operators.coreos.com/mta-operator.openshift-mta: ''
@@ -404,7 +406,6 @@ spec:
     If you encounter any issues while using Migration Toolkit for Applications Operator, create a [support case](https://access.redhat.com/support/cases/) for bugs, enhancements, or other requests.
 
   replaces: mta-operator.v7.0.2
-
 ---
 apiVersion: operators.coreos.com/v1alpha1
 kind: Subscription
@@ -417,4 +418,4 @@ spec:
   name: mta-operator
   source: redhat-operators
   sourceNamespace: openshift-marketplace
-  startingCSV: mta-operator.v7.0.2
+  startingCSV: mta-operator.v7.0.3

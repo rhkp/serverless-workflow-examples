@@ -1,9 +1,10 @@
-id: mta-analysis
-name: MTA Analysis
+specVersion: '0.8'
+id: mta-analysis-v7
+name: MTA v7.x Analysis
 description: Workflow to execute MTA Analysis
 annotations:
-  - "workflow-type/assessment"
-version: "1.0"
+  - workflow-type/assessment
+version: '1.0'
 timeouts:
   workflowExecTimeout:
     duration: PT1H
@@ -14,13 +15,16 @@ dataInputSchema:
 extensions:
   - extensionid: workflow-uri-definitions
     definitions:
-      notifications: "https://raw.githubusercontent.com/janus-idp/backstage-plugins/%40janus-idp/plugin-notifications-backend%401.0.3/plugins/notifications-backend/src/openapi.yaml"
+      notifications: >-
+        https://raw.githubusercontent.com/parodos-dev/serverless-workflows/main/shared/specs/notifications-openapi.yaml
 functions:
   - name: filterApplication
     type: expression
     operation: "{application: .applications|map(select(.repository.url == .repositoryURL))[0]}"
   - name: getApplication
     operation: specs/mta.json#getApplications
+  - name: getApplicationAnalysis
+    operation: specs/mta.json#getApplicationAnalysis
   - name: createApplication
     operation: specs/mta.json#createApplication
   - name: createTaskgroup
@@ -53,11 +57,19 @@ functions:
     operation: specs/mta.json#getTickets
   - name: getTicket
     operation: specs/mta.json#getTicket
-  - name: createNotification
-    operation: notifications#createNotification
   - name: logInfo
     type: custom
-    operation: "sysout:INFO"
+    operation: sysout:INFO
+  - name: countMandatoriesIncidents
+    type: expression
+    operation: >-
+      .applicationAnalysis | [select (.issues[].category=="mandatory")][0] |
+      [.issues[]?.incidents //[]] | .[-1][-1].id
+  - name: countNonMandatoriesIncidents
+    type: expression
+    operation: >-
+      .applicationAnalysis | [select (.issues[].category!="mandatory")][0] |
+      [.issues[]?.incidents //[]] | .[-1][-1].id
 states:
   - name: GetApplication
     type: operation
@@ -68,7 +80,12 @@ states:
         actionDataFilter:
           toStateData: ".applications"
     stateDataFilter:
-      output: "{backstageUser: .backstageUser, backstageGroup: .backstageGroup, repositoryURL: .repositoryURL, migrationStartDatetime: .migrationStartDatetime, migrationEndDatetime: .migrationEndDatetime, exportToIssueManager: .exportToIssueManager, application: .repositoryURL as $r| if .applications == null then null else .applications|map(select(.repository.url == $r))[0] end}"
+      output: >-
+        {recipients: .recipients, repositoryURL: .repositoryURL,
+        migrationStartDatetime: .migrationStartDatetime, migrationEndDatetime:
+        .migrationEndDatetime, exportToIssueManager: .exportToIssueManager,
+        application: .repositoryURL as $r| if .applications == null then null
+        else .applications|map(select(.repository.url == $r))[0] end}
     transition: AppExist
   - name: AppExist
     type: switch
@@ -148,7 +165,7 @@ states:
         functionRef:
           refName: "logInfo"
           arguments:
-            message: "\"Sleeping before checking the analysis result \""
+            message: '"Sleeping before checking the analysis result "'
         sleep:
           after: PT30S
       - name: "getTaskgroup" 
@@ -167,14 +184,79 @@ states:
   - name: checkReportDone
     type: switch
     dataConditions:
-      - condition: (.taskgroup.state == "Ready" and (.taskgroup.tasks[0].state == "Running" or .taskgroup.tasks[0].state == "Pending"))
+      - condition: >-
+          (.taskgroup.state == "Ready" and (.taskgroup.tasks[0].state ==
+          "Running" or (.taskgroup.tasks[0].state == "Pending" or
+          .taskgroup.tasks[0].state == "Postponed")))
         transition: pollResults
-      - condition: (.taskgroup.state == "Ready" and .exportToIssueManager == "true" and .taskgroup.tasks[0].state == "Succeeded")
-        transition: GetTrackers
-      - condition: (.taskgroup.state == "Ready" and .exportToIssueManager == "false" and .taskgroup.tasks[0].state == "Succeeded")
-        transition: NotifyCompletion
-      - condition: (.taskgroup.state == "Ready" and .taskgroup.tasks[0].state == "Failed")
+        name: taskNotCompleted
+      - condition: >-
+          (.taskgroup.state == "Ready" and .taskgroup.tasks[0].state ==
+          "Failed")
         transition: NotifyFailureBackstage
+        name: taskFailed
+    defaultCondition:
+      transition: GetApplicationAnalysis
+  - name: GetApplicationAnalysis
+    type: operation
+    actionMode: sequential
+    actions:
+      - name: getApp
+        functionRef:
+          refName: getApplicationAnalysis
+          arguments:
+            id: .application.id
+        actionDataFilter:
+          toStateData: .applicationAnalysis
+    transition: CountMandatoriesIncidents
+  - name: CountMandatoriesIncidents
+    type: operation
+    actionMode: sequential
+    actions:
+      - name: countApplicationMandatoryIncident
+        actionDataFilter:
+          toStateData: .application.mandatoriesIncidents
+        functionRef:
+          refName: countMandatoriesIncidents
+      - name: logMandatoriesIncidents
+        functionRef:
+          refName: logInfo
+          arguments:
+            message: >-
+              "Mandatory incidents:
+              \(.application.mandatoriesIncidents|tostring)"
+    transition: CountNonMandatoriesIncidents
+  - name: CountNonMandatoriesIncidents
+    type: operation
+    actionMode: sequential
+    actions:
+      - name: countApplicationNotMandatoryIncident
+        actionDataFilter:
+          toStateData: .application.nonMandatoriesIncidents
+        functionRef:
+          refName: countNonMandatoriesIncidents
+      - name: logNonMandatoriesIncidents
+        functionRef:
+          refName: logInfo
+          arguments:
+            message: >-
+              "Non-mandatory incidents:
+              \(.application.nonMandatoriesIncidents|tostring)"
+    transition: CheckMandatoriesIncidents
+  - name: CheckMandatoriesIncidents
+    type: switch
+    dataConditions:
+      - condition: .application.mandatoriesIncidents > 0
+        transition: NotifyMandatoriesIncidentsInApplication
+        name: hasMandatoriesIncidents
+    defaultCondition:
+      transition: CheckJiraIntegration
+  - name: CheckJiraIntegration
+    type: switch
+    dataConditions:
+      - condition: .exportToIssueManager == "true"
+        transition: GetTrackers
+        name: NotifyTracker
     defaultCondition:
       transition: NotifyCompletion
   - name: GetTrackers
@@ -296,8 +378,8 @@ states:
             startDate: (.migrationStartDatetime)
             endDate: (.migrationEndDatetime)
             applications:
-            - id: .application.id
-              name: .application.name
+              - id: .application.id
+                name: .application.name
         actionDataFilter:
           toStateData: ".createdMigrationWave"
     transition: GetJiraTickets      
@@ -359,7 +441,7 @@ states:
     actions:
       - condition: .backstageUser != null or .backstageGroup != null
         functionRef:
-          refName: createNotification
+          refName: logInfo
           arguments:
             title: "MTA analysis completed"
             message: '"MTA analysis is completed and the report for " + .application.repository.url + " is ready."'
@@ -376,12 +458,20 @@ states:
     stateDataFilter:
       output: '{mtaAnalysisResultURL: ($SECRET.mta.url + "/hub/applications/" + (.application.id|tostring) + "/bucket/windup/report/"), migrationWaveJiraTicketURL: .migrationWaveJiraTicket.link, repositoryURL: .repositoryURL, workflowOptions: {migrationOptions: [{id: "m2k", name: "Move2Kube workflow"}]}}'
     end: true
+  - name: NotifyMandatoriesIncidentsInApplication
+    type: operation
+    actions:
+      - functionRef:
+          refName: logInfo
+          arguments:
+            message: '"Logging data: \(.)"'
+    transition: CheckJiraIntegration
   - name: NotifyFailureBackstage
     type: operation
     actions:
       - condition: .backstageUser != null or .backstageGroup != null
         functionRef:
-          refName: createNotification
+          refName: logInfo
           arguments:
             title: "MTA analysis failed"
             message: '"MTA analysis for " + .application.repository.url + " failed. Check logs of task pod: " + .taskgroup.tasks[0].pod'
